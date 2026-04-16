@@ -1,0 +1,40 @@
+{
+  "settings": {
+    "delay": 11,
+    "viewport_width": 1600,
+    "viewport_height": 900,
+    "cf_manual_wait": 30,
+    "captcha_manual_wait": 30,
+    "captcha_retries": 8,
+    "navigation_retries": 4,
+    "verify_max_rounds": 4,
+    "output_dir": "output",
+    "state_dir": "state",
+    "resume_state_dir": "state/custom_batch_resume",
+    "profiles_root": "state/camoufox_profiles",
+    "log_dir": "logs/camoufox_custom_batch",
+    "headless": false,
+    "fresh_profiles": true,
+    "reset_resume": false
+  },
+  "workers": {
+    "w1": {
+      "proxy": "",
+      "tasks": [
+        {
+          "docs": 40,
+          "url": "https://thuvienphapluat.vn/page/tim-van-ban.aspx?keyword=&area=0&match=True&type=0&status=0&signer=0&sort=1&lan=1&scan=0&org=22&fields=&page=1"
+        }
+      ]
+    },
+    "w2": {
+      "proxy": "",
+      "tasks": []
+    },
+    "w3": {
+      "proxy": "",
+      "tasks": []
+    }
+  }
+}
+

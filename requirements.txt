@@ -1,0 +1,15 @@
+# Core browser automation
+camoufox[geoip]>=0.4.11
+playwright>=1.52.0
+
+# OCR captcha
+pillow>=10.4.0
+pytesseract>=0.3.10
+pypdf>=5.1.0
+
+# Notes:
+# 1) Install Tesseract binary on Windows:
+#    https://github.com/tesseract-ocr/tesseract
+#    Expected path in script: C:\Program Files\Tesseract-OCR\tesseract.exe
+# 2) After pip install, fetch Camoufox browser:
+#    python -m camoufox fetch
