@@ -99,3 +99,50 @@ Dry-run (kiểm tra config và lệnh trước khi chạy thật):
 - `run_custom_batch.py`: đọc config JSON và build command chạy
 - `config/custom_batch.json`: cấu hình cần sửa khi dùng
 
+## 8) Chạy bằng Docker Compose
+
+Repo đã có sẵn:
+- `Dockerfile`
+- `docker-compose.yml`
+- `docker/entrypoint.sh`
+
+### Chuẩn bị
+
+1. Cài Docker Desktop.
+2. Sửa `config/custom_batch.json` (docs/url/proxy).
+
+### Build image
+
+```bash
+docker compose build
+```
+
+### Chạy crawl
+
+```bash
+docker compose up
+```
+
+Container sẽ mount sẵn:
+- `./config -> /app/config`
+- `./output -> /app/output`
+- `./logs -> /app/logs`
+- `./state -> /app/state`
+
+Mặc định compose chạy `--headless`.
+
+### Chạy lại và reset resume
+
+```bash
+docker compose run --rm crawler python run_custom_batch.py --config /app/config/custom_batch.json --headless --reset-resume
+```
+
+### Bỏ bước fetch Camoufox mỗi lần start
+
+Mặc định entrypoint chạy `python -m camoufox fetch` để đảm bảo browser có sẵn.
+Sau lần đầu, nếu muốn start nhanh hơn:
+
+```yaml
+environment:
+  SKIP_CAMOUFOX_FETCH: "1"
+```
