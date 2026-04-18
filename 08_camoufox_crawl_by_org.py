@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse, urlunparse
 
 
 try:
@@ -186,8 +186,8 @@ def parse_orgs(orgs_text: str) -> list[int]:
         if not part:
             continue
         org = int(part)
-        if org not in ORG_MAP:
-            raise ValueError(f"Unknown org id: {org}")
+        if org < 0:
+            raise ValueError(f"Invalid org id: {org}")
         orgs.append(org)
     if not orgs:
         raise ValueError("Empty --orgs")
@@ -223,7 +223,7 @@ def get_file_suffix(start_page: int, end_page: int) -> str:
 
 def get_output_file(output_dir: Path, org_id: int, start_page: int, end_page: int) -> Path:
     suffix = get_file_suffix(start_page, end_page)
-    slug = ORG_MAP[org_id]["slug"]
+    slug = ORG_MAP.get(org_id, {}).get("slug", f"org-{org_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir / f"org_{org_id:03d}_{slug}{suffix}.jsonl"
 
@@ -282,6 +282,27 @@ def load_crawled_urls(output_file: Path) -> set[str]:
             if isinstance(url, str) and url:
                 urls.add(normalize_url(url))
     return urls
+
+
+def load_crawled_urls_for_org(output_dir: Path, org_id: int) -> set[str]:
+    slug = ORG_MAP.get(org_id, {}).get("slug", f"org-{org_id}")
+    pattern = f"org_{org_id:03d}_{slug}*.jsonl"
+    urls: set[str] = set()
+    for file in sorted(output_dir.glob(pattern)):
+        urls.update(load_crawled_urls(file))
+    return urls
+
+
+def load_pdf_links(pdf_links_file: Path) -> set[str]:
+    links: set[str] = set()
+    if not pdf_links_file.exists():
+        return links
+    with pdf_links_file.open("r", encoding="utf-8") as f:
+        for line in f:
+            link = str(line or "").strip()
+            if link:
+                links.add(link)
+    return links
 
 
 def repair_mojibake(text: str) -> str:
@@ -386,7 +407,19 @@ def infer_document_number(title: str, content: str, url: str) -> str:
     return ""
 
 
-def build_search_url(org_id: int, page: int) -> str:
+def build_search_url(org_id: int, page: int, listing_url: str | None = None) -> str:
+    if listing_url:
+        parsed = urlparse(str(listing_url).strip())
+        if parsed.scheme and parsed.netloc:
+            qs = parse_qs(parsed.query or "", keep_blank_values=True)
+            qs["page"] = [str(page)]
+            if "org" in qs or "Org" in qs:
+                if "org" in qs:
+                    qs["org"] = [str(org_id)]
+                else:
+                    qs["Org"] = [str(org_id)]
+            query = urlencode(qs, doseq=True)
+            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, query, parsed.fragment))
     return SEARCH_TPL.format(org=org_id, page=page)
 
 
@@ -463,6 +496,7 @@ class CrawlStats:
     requests: int = 0
     listing_pages: int = 0
     blocked_pages: int = 0
+    pdf_links: int = 0
 
 
 class TVPLCamoufoxCrawler:
@@ -480,6 +514,9 @@ class TVPLCamoufoxCrawler:
         viewport_width: int,
         viewport_height: int,
         single_page: int | None,
+        listing_url: str | None,
+        output_base_range: tuple[int, int] | None,
+        pdf_links_file: Path | None,
         cf_auto_attempts: int,
         cf_manual_wait: int,
         captcha_retries: int,
@@ -497,8 +534,13 @@ class TVPLCamoufoxCrawler:
         self.viewport_width = max(800, int(viewport_width))
         self.viewport_height = max(600, int(viewport_height))
         self.single_page = single_page
+        self.listing_url = str(listing_url or "").strip() or None
+        self.output_base_range = output_base_range
+        self.pdf_links_file = pdf_links_file
         self.cf_auto_attempts = max(1, int(cf_auto_attempts))
         self.cf_manual_wait = max(0, int(cf_manual_wait))
+        self.cf_check_timeout = 8.0
+        self.cf_handler_timeout = max(45.0, float(self.cf_manual_wait + self.cf_auto_attempts * 8 + 30))
         self.captcha_retries = max(1, int(captcha_retries))
         self.captcha_manual_wait = max(0, int(captcha_manual_wait))
         self.navigation_retries = max(1, int(navigation_retries))
@@ -508,17 +550,47 @@ class TVPLCamoufoxCrawler:
 
         self._outputs: dict[tuple[int, int, int], Path] = {}
         self._seen_urls: dict[str, set[str]] = {}
+        self._org_seen_urls: dict[int, set[str]] = {}
+        self._seen_pdf_links: set[str] = set()
+
+        if self.pdf_links_file is not None:
+            self._seen_pdf_links = load_pdf_links(self.pdf_links_file)
 
         for org_id in self.org_ids:
+            self._org_seen_urls[org_id] = load_crawled_urls_for_org(self.output_dir, org_id)
             for start_page, end_page in self.ranges:
-                output_file = get_output_file(self.output_dir, org_id, start_page, end_page)
+                if self.output_base_range is not None:
+                    out_start, out_end = self.output_base_range
+                else:
+                    out_start, out_end = start_page, end_page
+                output_file = get_output_file(self.output_dir, org_id, out_start, out_end)
                 key = str(output_file)
                 self._outputs[(org_id, start_page, end_page)] = output_file
-                self._seen_urls[key] = load_crawled_urls(output_file)
+                if key not in self._seen_urls:
+                    self._seen_urls[key] = set(self._org_seen_urls[org_id])
+                else:
+                    self._seen_urls[key].update(self._org_seen_urls[org_id])
 
         self._cm: Any | None = None
         self._browser_obj: Any | None = None
         self.page: Any | None = None
+
+    def _save_pdf_link(self, pdf_url: str) -> bool:
+        link = str(pdf_url or "").strip()
+        if not link or self.pdf_links_file is None:
+            return False
+        if link in self._seen_pdf_links:
+            return False
+        try:
+            self.pdf_links_file.parent.mkdir(parents=True, exist_ok=True)
+            with self.pdf_links_file.open("a", encoding="utf-8") as f:
+                f.write(link + "\n")
+        except Exception as exc:
+            self.logger.warning("[W%s] failed to save PDF link %s: %s", self.worker, link, exc)
+            return False
+        self._seen_pdf_links.add(link)
+        self.stats.pdf_links += 1
+        return True
 
     def _wait_seconds(self) -> float:
         low = max(1.0, self.base_delay - 2.0)
@@ -810,6 +882,21 @@ class TVPLCamoufoxCrawler:
             or "cf-browser-verification" in html
         )
 
+    async def _safe_is_cloudflare_challenge(self) -> bool:
+        """Cloudflare check guarded by timeout to avoid indefinite Playwright stalls."""
+        try:
+            return await asyncio.wait_for(self._is_cloudflare_challenge(), timeout=self.cf_check_timeout)
+        except asyncio.TimeoutError:
+            self.logger.warning(
+                "[W%s] Cloudflare check timed out after %.1fs; assume challenge still active.",
+                self.worker,
+                self.cf_check_timeout,
+            )
+            return True
+        except Exception as exc:
+            self.logger.warning("[W%s] Cloudflare check error, assume challenge active: %s", self.worker, exc)
+            return True
+
     async def _click_cloudflare_widget(self) -> bool:
         await self._ensure_active_page()
         if not self.page:
@@ -913,17 +1000,30 @@ class TVPLCamoufoxCrawler:
         return False
 
     async def _handle_cloudflare(self) -> bool:
-        if not await self._is_cloudflare_challenge():
+        if not await self._safe_is_cloudflare_challenge():
             return True
 
         self.stats.blocked_pages += 1
 
         for attempt in range(1, self.cf_auto_attempts + 1):
-            clicked = await self._click_cloudflare_widget()
+            try:
+                clicked = await asyncio.wait_for(self._click_cloudflare_widget(), timeout=self.cf_check_timeout)
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    "[W%s] Cloudflare click timed out after %.1fs (attempt %d/%d).",
+                    self.worker,
+                    self.cf_check_timeout,
+                    attempt,
+                    self.cf_auto_attempts,
+                )
+                clicked = False
+            except Exception as exc:
+                self.logger.warning("[W%s] Cloudflare click error (attempt %d/%d): %s", self.worker, attempt, self.cf_auto_attempts, exc)
+                clicked = False
             if not self.page:
                 return False
             await self.page.wait_for_timeout(3500 if clicked else 1800)
-            if not await self._is_cloudflare_challenge():
+            if not await self._safe_is_cloudflare_challenge():
                 self.logger.info("[W%s] Cloudflare solved automatically.", self.worker)
                 return True
             self.logger.warning(
@@ -942,7 +1042,7 @@ class TVPLCamoufoxCrawler:
             self.cf_manual_wait,
         )
         for sec in range(self.cf_manual_wait):
-            if not await self._is_cloudflare_challenge():
+            if not await self._safe_is_cloudflare_challenge():
                 self.logger.info("[W%s] Cloudflare solved manually.", self.worker)
                 return True
             if sec > 0 and sec % 10 == 0:
@@ -951,7 +1051,7 @@ class TVPLCamoufoxCrawler:
                 await self.page.wait_for_timeout(1000)
             else:
                 await asyncio.sleep(1)
-        return not await self._is_cloudflare_challenge()
+        return not await self._safe_is_cloudflare_challenge()
 
     async def _wait_manual_captcha(self) -> bool:
         if self.captcha_manual_wait <= 0:
@@ -1206,8 +1306,17 @@ class TVPLCamoufoxCrawler:
             if not self.page:
                 return False
 
-            if await self._is_cloudflare_challenge():
-                if not await self._handle_cloudflare():
+            if await self._safe_is_cloudflare_challenge():
+                try:
+                    cf_ok = await asyncio.wait_for(self._handle_cloudflare(), timeout=self.cf_handler_timeout)
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        "[W%s] Cloudflare handler timed out after %.1fs; fallback to navigation retry.",
+                        self.worker,
+                        self.cf_handler_timeout,
+                    )
+                    cf_ok = False
+                if not cf_ok:
                     return False
                 continue
 
@@ -1527,6 +1636,7 @@ class TVPLCamoufoxCrawler:
         page_num: int,
         output_file: Path,
         seen: set[str],
+        org_seen: set[str],
     ) -> bool:
         if not self.page:
             return False
@@ -1551,7 +1661,7 @@ class TVPLCamoufoxCrawler:
             return False
 
         final_url = normalize_url(self.page.url or doc_url)
-        if final_url in seen:
+        if final_url in seen or final_url in org_seen:
             self.logger.info(
                 "[W%s] DOC_STATUS %s",
                 self.worker,
@@ -1578,6 +1688,13 @@ class TVPLCamoufoxCrawler:
                 len(content),
                 pdf_url or "n/a",
             )
+            if pdf_url and self._save_pdf_link(pdf_url):
+                self.logger.info(
+                    "[W%s] PDF_LINK saved: %s -> %s",
+                    self.worker,
+                    pdf_url,
+                    self.pdf_links_file,
+                )
         if not content:
             self.logger.info(
                 "[W%s] DOC_STATUS %s",
@@ -1622,6 +1739,7 @@ class TVPLCamoufoxCrawler:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         seen.add(final_url)
+        org_seen.add(final_url)
         self.stats.items += 1
         self.logger.info("[W%s] wrote #%d org=%d -> %s", self.worker, self.stats.items, org_id, output_file.name)
         self.logger.info(
@@ -1646,7 +1764,8 @@ class TVPLCamoufoxCrawler:
 
         output_file = self._outputs[(org_id, start_page, end_page)]
         seen = self._seen_urls.setdefault(str(output_file), set())
-        url = build_search_url(org_id, page_num)
+        org_seen = self._org_seen_urls.setdefault(org_id, set())
+        url = build_search_url(org_id, page_num, self.listing_url)
 
         ok = await self._goto_with_recovery(url, "listing")
         if not ok:
@@ -1682,7 +1801,7 @@ class TVPLCamoufoxCrawler:
 
         written = 0
         for doc_url in links:
-            if doc_url in seen:
+            if doc_url in seen or doc_url in org_seen:
                 self.logger.info(
                     "[W%s] DOC_STATUS %s",
                     self.worker,
@@ -1704,6 +1823,7 @@ class TVPLCamoufoxCrawler:
                 page_num=page_num,
                 output_file=output_file,
                 seen=seen,
+                org_seen=org_seen,
             ):
                 written += 1
             await self._sleep_request_delay()
@@ -1743,6 +1863,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--orgs", type=str, default="", help="Org ids, comma-separated")
     parser.add_argument("--ranges", type=str, default="1-999", help="Page ranges, e.g. 1-50,101-150")
     parser.add_argument("--single-page", type=int, default=None, help="Only crawl this listing page")
+    parser.add_argument("--listing-url", type=str, default="", help="Base listing URL (all query params kept, only page auto-updated)")
+    parser.add_argument("--output-base-start", type=int, default=None, help="Output file base start page")
+    parser.add_argument("--output-base-end", type=int, default=None, help="Output file base end page")
+    parser.add_argument("--pdf-links-file", type=str, default="", help="Save PDF fallback URLs to this txt file (one URL per line)")
     parser.add_argument("--delay", type=float, default=18.0, help="Base delay in seconds")
     parser.add_argument("--proxy", type=str, default="", help="Proxy format supported by parser")
     parser.add_argument("--profile-dir", type=str, default="", help="Persistent profile directory")
@@ -1782,6 +1906,24 @@ async def async_main(args: argparse.Namespace) -> int:
         print("Argument error: --single-page must be >= 1")
         return 2
 
+    listing_url: str | None = str(args.listing_url or "").strip() or None
+    if listing_url is not None:
+        p = urlparse(listing_url)
+        if not p.scheme or not p.netloc:
+            print("Argument error: --listing-url is not a valid absolute URL")
+            return 2
+
+    if (args.output_base_start is None) != (args.output_base_end is None):
+        print("Argument error: --output-base-start and --output-base-end must be provided together")
+        return 2
+
+    output_base_range: tuple[int, int] | None = None
+    if args.output_base_start is not None and args.output_base_end is not None:
+        if args.output_base_start < 1 or args.output_base_end < args.output_base_start:
+            print("Argument error: invalid output base range")
+            return 2
+        output_base_range = (int(args.output_base_start), int(args.output_base_end))
+
     try:
         proxy_url = parse_proxy_value(args.proxy)
     except Exception as exc:
@@ -1791,6 +1933,11 @@ async def async_main(args: argparse.Namespace) -> int:
     state_dir = Path(args.state_dir)
     output_dir = Path(args.output_dir)
     profile_dir = Path(args.profile_dir) if args.profile_dir.strip() else state_dir / "camoufox_profiles" / args.worker
+    pdf_links_file_text = str(args.pdf_links_file or "").strip()
+    if pdf_links_file_text:
+        pdf_links_file = Path(pdf_links_file_text)
+    else:
+        pdf_links_file = output_dir / f"pdf_urls_{args.worker}.txt"
 
     crawler = TVPLCamoufoxCrawler(
         worker=args.worker,
@@ -1804,6 +1951,9 @@ async def async_main(args: argparse.Namespace) -> int:
         viewport_width=args.viewport_width,
         viewport_height=args.viewport_height,
         single_page=args.single_page,
+        listing_url=listing_url,
+        output_base_range=output_base_range,
+        pdf_links_file=pdf_links_file,
         cf_auto_attempts=args.cf_auto_attempts,
         cf_manual_wait=args.cf_manual_wait,
         captcha_retries=args.captcha_retries,
@@ -1814,7 +1964,8 @@ async def async_main(args: argparse.Namespace) -> int:
     started = time.time()
     print(
         f"[START] worker={args.worker} orgs={org_ids} ranges={ranges} "
-        f"single_page={args.single_page} proxy={'on' if proxy_url else 'off'} profile={profile_dir}",
+        f"single_page={args.single_page} listing_url={'set' if listing_url else 'default'} output_base={output_base_range} "
+        f"proxy={'on' if proxy_url else 'off'} profile={profile_dir} pdf_links={pdf_links_file}",
         flush=True,
     )
 
@@ -1829,10 +1980,11 @@ async def async_main(args: argparse.Namespace) -> int:
 
     elapsed = time.time() - started
     print(
-        "Done. completed=True, items={}, links={}, requests={}, elapsed={:.1f}s".format(
+        "Done. completed=True, items={}, links={}, requests={}, pdf_links_saved={}, elapsed={:.1f}s".format(
             stats.items,
             stats.links,
             stats.requests,
+            stats.pdf_links,
             elapsed,
         )
     )

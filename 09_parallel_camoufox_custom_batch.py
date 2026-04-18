@@ -46,6 +46,7 @@ class Task:
     start_page: int
     end_page: int
     docs_target: int
+    listing_url: str
 
 
 @dataclass
@@ -57,12 +58,8 @@ class Integrity:
     success_total: int
 
 
-DEFAULT_WORKER_PLANS: dict[str, list[Task]] = {
-    "w1": [],
-    "w2": [],
-    "w3": [],
-}
-WORKERS = ["w1", "w2", "w3"]
+WORKERS = [f"w{i}" for i in range(1, 9)]
+DEFAULT_WORKER_PLANS: dict[str, list[Task]] = {wid: [] for wid in WORKERS}
 
 
 def now_iso() -> str:
@@ -98,7 +95,7 @@ def _parse_org_and_page_from_url(url: str) -> tuple[int, int]:
         raise ValueError(f"URL missing org parameter: {url}")
     org_id = int(org_vals[0].strip())
     page = int(str(page_vals[0]).strip()) if page_vals and str(page_vals[0]).strip() else 1
-    if org_id < 1 or page < 1:
+    if org_id < 0 or page < 1:
         raise ValueError(f"Invalid org/page in URL: {url}")
     return org_id, page
 
@@ -118,21 +115,39 @@ def parse_plan_arg(plan_text: str) -> list[Task]:
         docs = int(docs_s.strip())
         if docs <= 0:
             raise ValueError(f"Docs must be > 0: {item}")
-        org_id, start_page = _parse_org_and_page_from_url(url.strip())
+        listing_url = url.strip()
+        org_id, start_page = _parse_org_and_page_from_url(listing_url)
         pages = max(1, (docs + 19) // 20)
-        tasks.append(Task(org_id=org_id, start_page=start_page, end_page=start_page + pages - 1, docs_target=docs))
+        tasks.append(
+            Task(
+                org_id=org_id,
+                start_page=start_page,
+                end_page=start_page + pages - 1,
+                docs_target=docs,
+                listing_url=listing_url,
+            )
+        )
     return tasks
 
 
 def resolve_worker_plans(args: argparse.Namespace) -> dict[str, list[Task]]:
-    raw = {"w1": (args.plan_w1 or "").strip(), "w2": (args.plan_w2 or "").strip(), "w3": (args.plan_w3 or "").strip()}
+    raw = {wid: str(getattr(args, f"plan_{wid}", "") or "").strip() for wid in WORKERS}
     if not any(raw.values()):
         return DEFAULT_WORKER_PLANS
     return {wid: parse_plan_arg(raw[wid]) for wid in WORKERS}
 
 
-def _plan_signature(tasks: list[Task]) -> list[dict[str, int]]:
-    return [{"org_id": t.org_id, "start_page": t.start_page, "end_page": t.end_page, "docs_target": t.docs_target} for t in tasks]
+def _plan_signature(tasks: list[Task]) -> list[dict[str, Any]]:
+    return [
+        {
+            "org_id": t.org_id,
+            "start_page": t.start_page,
+            "end_page": t.end_page,
+            "docs_target": t.docs_target,
+            "listing_url": t.listing_url,
+        }
+        for t in tasks
+    ]
 
 
 def _resume_file(resume_state_dir: Path, worker_id: str) -> Path:
@@ -239,6 +254,106 @@ def _dedup_urls(values: list[Any]) -> list[str]:
         seen.add(u)
         out.append(u)
     return out
+
+
+def _merge_pdf_link_files(output_dir: Path, workers: list[str]) -> tuple[Path, int]:
+    merged_file = output_dir / "pdf_urls_all.txt"
+    seen: set[str] = set()
+    merged: list[str] = []
+    for wid in workers:
+        src = output_dir / f"pdf_urls_{wid}.txt"
+        if not src.exists():
+            continue
+        try:
+            with src.open("r", encoding="utf-8") as f:
+                for line in f:
+                    link = str(line or "").strip()
+                    if not link or link in seen:
+                        continue
+                    seen.add(link)
+                    merged.append(link)
+        except Exception:
+            continue
+    merged_file.parent.mkdir(parents=True, exist_ok=True)
+    with merged_file.open("w", encoding="utf-8") as f:
+        for link in merged:
+            f.write(link + "\n")
+    return merged_file, len(merged)
+
+
+def _collect_worker_missing_links(
+    *,
+    worker_id: str,
+    tasks: list[Task],
+    resume_state_dir: Path,
+) -> tuple[list[str], list[int]]:
+    if not tasks:
+        return [], []
+
+    state_file = _resume_file(resume_state_dir, worker_id)
+    if not state_file.exists():
+        return [], []
+
+    try:
+        raw = json.loads(state_file.read_text(encoding="utf-8"))
+    except Exception:
+        return [], []
+
+    if not isinstance(raw, dict):
+        return [], []
+
+    task_progress = raw.get("task_progress", {})
+    if not isinstance(task_progress, dict):
+        return [], []
+
+    miss_links: list[str] = []
+    miss_pages: set[int] = set()
+
+    for idx, task in enumerate(tasks):
+        rec = task_progress.get(_task_key(idx, task))
+        if not isinstance(rec, dict):
+            miss_pages.update(range(task.start_page, task.end_page + 1))
+            continue
+        integrity = _evaluate_integrity(task, rec)
+        miss_pages.update(integrity.missing_pages)
+        for links in integrity.missing_links_by_page.values():
+            miss_links.extend(links)
+
+    return sorted(_dedup_urls(miss_links)), sorted(miss_pages)
+
+
+def _write_worker_missing_links(output_dir: Path, worker_id: str, links: list[str]) -> tuple[Path, int]:
+    out = output_dir / f"missing_links_{worker_id}.txt"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as f:
+        for link in links:
+            f.write(link + "\n")
+    return out, len(links)
+
+
+def _merge_missing_link_files(output_dir: Path, workers: list[str]) -> tuple[Path, int]:
+    merged_file = output_dir / "missing_links_all.txt"
+    seen: set[str] = set()
+    merged: list[str] = []
+    for wid in workers:
+        src = output_dir / f"missing_links_{wid}.txt"
+        if not src.exists():
+            continue
+        try:
+            with src.open("r", encoding="utf-8") as f:
+                for line in f:
+                    link = normalize_url(str(line or "").strip())
+                    if not link or link in seen:
+                        continue
+                    seen.add(link)
+                    merged.append(link)
+        except Exception:
+            continue
+    merged_file.parent.mkdir(parents=True, exist_ok=True)
+    with merged_file.open("w", encoding="utf-8") as f:
+        for link in merged:
+            f.write(link + "\n")
+    return merged_file, len(merged)
 
 
 def _ensure_task_progress(state: dict[str, Any], task_index: int, task: Task) -> dict[str, Any]:
@@ -380,6 +495,9 @@ def _build_cmd(
     task: Task,
     range_start: int,
     range_end: int,
+    output_base_start: int | None,
+    output_base_end: int | None,
+    listing_url: str | None,
     delay: float,
     viewport_width: int,
     viewport_height: int,
@@ -412,6 +530,10 @@ def _build_cmd(
     ]
     if single_page is not None:
         cmd.extend(["--single-page", str(single_page)])
+    if output_base_start is not None and output_base_end is not None:
+        cmd.extend(["--output-base-start", str(output_base_start), "--output-base-end", str(output_base_end)])
+    if str(listing_url or "").strip():
+        cmd.extend(["--listing-url", str(listing_url).strip()])
     if proxy.strip():
         cmd.extend(["--proxy", proxy.strip()])
     if headless:
@@ -562,6 +684,9 @@ def run_worker_plan(
                 task=task,
                 range_start=start_page,
                 range_end=task.end_page,
+                output_base_start=task.start_page,
+                output_base_end=task.end_page,
+                listing_url=task.listing_url,
                 delay=delay,
                 viewport_width=viewport_width,
                 viewport_height=viewport_height,
@@ -621,6 +746,9 @@ def run_worker_plan(
                     task=task,
                     range_start=task.start_page,
                     range_end=task.end_page,
+                    output_base_start=task.start_page,
+                    output_base_end=task.end_page,
+                    listing_url=task.listing_url,
                     delay=delay,
                     viewport_width=viewport_width,
                     viewport_height=viewport_height,
@@ -676,8 +804,8 @@ def run_worker_plan(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run custom TVPL batch with 3 parallel Camoufox workers")
-    parser.add_argument("--worker-runner", type=str, default="", choices=["", "w1", "w2", "w3"])
+    parser = argparse.ArgumentParser(description="Run custom TVPL batch with up to 8 parallel Camoufox workers")
+    parser.add_argument("--worker-runner", type=str, default="", choices=["", *WORKERS])
     parser.add_argument("--python-bin", type=str, default=sys.executable)
     parser.add_argument("--delay", type=float, default=15.0)
     parser.add_argument("--viewport-width", type=int, default=1600)
@@ -695,12 +823,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-dir", type=str, default=str(DEFAULT_LOG_DIR))
     parser.add_argument("--fresh-profiles", action="store_true")
     parser.add_argument("--reset-resume", action="store_true")
-    parser.add_argument("--plan-w1", type=str, default="")
-    parser.add_argument("--plan-w2", type=str, default="")
-    parser.add_argument("--plan-w3", type=str, default="")
-    parser.add_argument("--proxy-w1", type=str, default="")
-    parser.add_argument("--proxy-w2", type=str, default="")
-    parser.add_argument("--proxy-w3", type=str, default="")
+    for wid in WORKERS:
+        parser.add_argument(f"--plan-{wid}", type=str, default="")
+    for wid in WORKERS:
+        parser.add_argument(f"--proxy-{wid}", type=str, default="")
     return parser.parse_args()
 
 
@@ -715,7 +841,7 @@ def main() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     if args.worker_runner:
-        proxy_map = {"w1": args.proxy_w1, "w2": args.proxy_w2, "w3": args.proxy_w3}
+        proxy_map = {wid: str(getattr(args, f"proxy_{wid}", "") or "") for wid in WORKERS}
         return run_worker_plan(
             worker_id=args.worker_runner,
             tasks=worker_plans.get(args.worker_runner, []),
@@ -763,13 +889,11 @@ def main() -> int:
         "--output-dir", str(output_dir),
         "--profiles-root", str(profiles_root),
         "--log-dir", str(log_dir),
-        "--plan-w1", args.plan_w1,
-        "--plan-w2", args.plan_w2,
-        "--plan-w3", args.plan_w3,
-        "--proxy-w1", args.proxy_w1,
-        "--proxy-w2", args.proxy_w2,
-        "--proxy-w3", args.proxy_w3,
     ]
+    for wid in WORKERS:
+        common_cmd.extend([f"--plan-{wid}", str(getattr(args, f"plan_{wid}", "") or "")])
+    for wid in WORKERS:
+        common_cmd.extend([f"--proxy-{wid}", str(getattr(args, f"proxy_{wid}", "") or "")])
     if args.headless:
         common_cmd.append("--headless")
     if args.reset_resume:
@@ -799,6 +923,25 @@ def main() -> int:
         print(f"[{wid}] exited rc={code}", flush=True)
         if code != 0 and rc == 0:
             rc = code
+
+    active_workers = [wid for wid, _, _ in procs]
+    for wid in active_workers:
+        links, missing_pages = _collect_worker_missing_links(
+            worker_id=wid,
+            tasks=worker_plans.get(wid, []),
+            resume_state_dir=resume_state_dir,
+        )
+        miss_file, miss_count = _write_worker_missing_links(output_dir, wid, links)
+        print(
+            f"[missing-links] {wid}: links={miss_count} missing_pages={len(missing_pages)} -> {miss_file}",
+            flush=True,
+        )
+
+    merged_missing_file, merged_missing_count = _merge_missing_link_files(output_dir, active_workers)
+    print(f"[missing-links] merged={merged_missing_count} -> {merged_missing_file}", flush=True)
+
+    merged_pdf_file, merged_pdf_count = _merge_pdf_link_files(output_dir, active_workers)
+    print(f"[pdf-links] merged={merged_pdf_count} -> {merged_pdf_file}", flush=True)
     return rc
 
 

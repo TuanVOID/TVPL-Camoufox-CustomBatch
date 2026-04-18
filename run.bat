@@ -26,7 +26,7 @@ if "%RC%"=="0" (
   echo [ERROR] Run that bai. Exit code: %RC%
 )
 echo.
-echo Logs: logs\\camoufox_custom_batch\\w1.log / w2.log / w3.log
+echo Logs: logs\\camoufox_custom_batch\\w1.log ... w8.log
 pause
 exit /b %RC%
 

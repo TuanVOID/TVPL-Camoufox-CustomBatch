@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = SCRIPT_DIR / "config" / "custom_batch.json"
 PARALLEL_RUNNER = SCRIPT_DIR / "09_parallel_camoufox_custom_batch.py"
-WORKERS = ("w1", "w2", "w3")
+WORKERS = tuple(f"w{i}" for i in range(1, 9))
 
 
 DEFAULT_SETTINGS: dict[str, object] = {
@@ -85,7 +85,7 @@ def build_plan(worker: str, tasks: list[dict]) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run TVPL custom batch crawl (3 workers) from config JSON"
+        description="Run TVPL custom batch crawl (up to 8 workers) from config JSON"
     )
     parser.add_argument(
         "--config",
@@ -144,7 +144,7 @@ def main() -> int:
         total_tasks += len(tasks)
 
     if total_tasks == 0:
-        raise ValueError("No tasks configured. Add at least one task in workers.w1/w2/w3")
+        raise ValueError("No tasks configured. Add at least one task in workers.w1...workers.w8")
 
     # resolve dirs relative to project root when not absolute
     def _resolve_dir(value: object, key: str) -> str:
@@ -194,19 +194,11 @@ def main() -> int:
         profiles_root,
         "--log-dir",
         log_dir,
-        "--plan-w1",
-        plan_map["w1"],
-        "--plan-w2",
-        plan_map["w2"],
-        "--plan-w3",
-        plan_map["w3"],
-        "--proxy-w1",
-        proxy_map["w1"],
-        "--proxy-w2",
-        proxy_map["w2"],
-        "--proxy-w3",
-        proxy_map["w3"],
     ]
+    for wid in WORKERS:
+        cmd.extend([f"--plan-{wid}", plan_map[wid]])
+    for wid in WORKERS:
+        cmd.extend([f"--proxy-{wid}", proxy_map[wid]])
 
     if bool(settings.get("headless")) or bool(args.headless):
         cmd.append("--headless")

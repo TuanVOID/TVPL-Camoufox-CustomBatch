@@ -1,18 +1,18 @@
-# TVPL Camoufox Custom Batch Crawler
+﻿# TVPL Camoufox Custom Batch Crawler
 
-Crawler độc lập cho `thuvienphapluat.vn` theo luồng **custom batch 3 workers** (từ flow `09_start_camoufox_custom_batch_3workers.bat`).
+Crawler Ä‘á»™c láº­p cho `thuvienphapluat.vn` theo luá»“ng **custom batch 8 workers** (tá»« flow `09_start_camoufox_custom_batch_3workers.bat`).
 
-Mục tiêu: clone sang máy khác, cài requirements, điền `số bài + link + proxy` là chạy ngay.
+Má»¥c tiÃªu: clone sang mÃ¡y khÃ¡c, cÃ i requirements, Ä‘iá»n `sá»‘ bÃ i + link + proxy` lÃ  cháº¡y ngay.
 
-## 1) Yêu cầu
+## 1) YÃªu cáº§u
 
-- Python 3.10+ (khuyến nghị 3.11)
-- Windows (đã có `setup.bat`, `run.bat`)
-- Tesseract OCR (nếu muốn auto captcha OCR):
-  - Cài tại: `C:\Program Files\Tesseract-OCR\tesseract.exe`
-  - Hoặc đặt biến môi trường `TESSERACT_CMD` trỏ đến `tesseract.exe`
+- Python 3.10+ (khuyáº¿n nghá»‹ 3.11)
+- Windows (Ä‘Ã£ cÃ³ `setup.bat`, `run.bat`)
+- Tesseract OCR (náº¿u muá»‘n auto captcha OCR):
+  - CÃ i táº¡i: `C:\Program Files\Tesseract-OCR\tesseract.exe`
+  - Hoáº·c Ä‘áº·t biáº¿n mÃ´i trÆ°á»ng `TESSERACT_CMD` trá» Ä‘áº¿n `tesseract.exe`
 
-## 2) Cài đặt nhanh
+## 2) CÃ i Ä‘áº·t nhanh
 
 ```bat
 git clone <REPO_URL>
@@ -20,16 +20,16 @@ cd TVPL-Camoufox-CustomBatch
 setup.bat
 ```
 
-`setup.bat` sẽ:
-- tạo `.venv`
-- cài `requirements.txt`
-- chạy `python -m camoufox fetch`
+`setup.bat` sáº½:
+- táº¡o `.venv`
+- cÃ i `requirements.txt`
+- cháº¡y `python -m camoufox fetch`
 
-## 3) Cấu hình để chạy
+## 3) Cáº¥u hÃ¬nh Ä‘á»ƒ cháº¡y
 
-Sửa file: `config/custom_batch.json`
+Sá»­a file: `config/custom_batch.json`
 
-Mỗi task có format:
+Má»—i task cÃ³ format:
 
 ```json
 {
@@ -38,10 +38,10 @@ Mỗi task có format:
 }
 ```
 
-Ý nghĩa:
-- `docs`: số bài muốn crawl
-- `url`: link listing bắt đầu (có `org=...` và `page=...`)
-- script tự tính số trang theo công thức `ceil(docs / 20)`
+Ã nghÄ©a:
+- `docs`: sá»‘ bÃ i muá»‘n crawl
+- `url`: link listing báº¯t Ä‘áº§u (cÃ³ `org=...` vÃ  `page=...`)
+- script tá»± tÃ­nh sá»‘ trang theo cÃ´ng thá»©c `ceil(docs / 20)`
 
 Proxy theo worker:
 
@@ -49,100 +49,62 @@ Proxy theo worker:
 "workers": {
   "w1": { "proxy": "ip:port:user:password", "tasks": [ ... ] },
   "w2": { "proxy": "", "tasks": [ ... ] },
-  "w3": { "proxy": "", "tasks": [ ... ] }
+  "w3": { "proxy": "", "tasks": [ ... ] },
+  "w4": { "proxy": "", "tasks": [ ... ] },
+  "w5": { "proxy": "", "tasks": [ ... ] },
+  "w6": { "proxy": "", "tasks": [ ... ] },
+  "w7": { "proxy": "", "tasks": [ ... ] },
+  "w8": { "proxy": "", "tasks": [ ... ] }
 }
 ```
 
-Proxy hỗ trợ các format:
+Proxy há»— trá»£ cÃ¡c format:
 - `ip:port:user:password`
 - `user:pass@ip:port`
 - `ip:port`
 - `http://user:pass@ip:port`
 
-## 4) Chạy
+## 4) Cháº¡y
 
 ```bat
 run.bat
 ```
 
-Hoặc CLI:
+Hoáº·c CLI:
 
 ```bat
 .venv\Scripts\python.exe run_custom_batch.py --config config\custom_batch.json
 ```
 
-Dry-run (kiểm tra config và lệnh trước khi chạy thật):
+Dry-run (kiá»ƒm tra config vÃ  lá»‡nh trÆ°á»›c khi cháº¡y tháº­t):
 
 ```bat
 .venv\Scripts\python.exe run_custom_batch.py --config config\custom_batch.json --dry-run
 ```
 
-## 5) Thư mục đầu ra
+## 5) ThÆ° má»¥c Ä‘áº§u ra
 
-- Kết quả JSONL: `output/`
-- Log worker: `logs/camoufox_custom_batch/w1.log`, `w2.log`, `w3.log`
-- Resume state: `state/custom_batch_resume/w1.json`, `w2.json`, `w3.json`
+- Káº¿t quáº£ JSONL: `output/`
+- PDF fallback links (1 URL / line): `output/pdf_urls_w1.txt` ... `output/pdf_urls_w8.txt`
+- Log worker: `logs/camoufox_custom_batch/w1.log` ... `w8.log`
+- Resume state: `state/custom_batch_resume/w1.json` ... `w8.json`
 
-## 6) Resume / chạy lại
+## 6) Resume / cháº¡y láº¡i
 
-- Mặc định script resume theo state cũ.
-- Muốn reset tiến độ rồi crawl lại:
+- Máº·c Ä‘á»‹nh script resume theo state cÅ©.
+- Muá»‘n reset tiáº¿n Ä‘á»™ rá»“i crawl láº¡i:
 
 ```bat
 .venv\Scripts\python.exe run_custom_batch.py --config config\custom_batch.json --reset-resume
 ```
 
-## 7) File chính
+## 7) File chÃ­nh
 
 - `08_camoufox_crawl_by_org.py`: crawler 1 worker
-- `09_parallel_camoufox_custom_batch.py`: điều phối 3 worker + strict verify/backfill
-- `run_custom_batch.py`: đọc config JSON và build command chạy
-- `config/custom_batch.json`: cấu hình cần sửa khi dùng
+- `09_parallel_camoufox_custom_batch.py`: Ä‘iá»u phá»‘i 8 worker + strict verify/backfill
+- `run_custom_batch.py`: Ä‘á»c config JSON vÃ  build command cháº¡y
+- `config/custom_batch.json`: cáº¥u hÃ¬nh cáº§n sá»­a khi dÃ¹ng
 
-## 8) Chạy bằng Docker Compose
+## 8) Ghi chu
 
-Repo đã có sẵn:
-- `Dockerfile`
-- `docker-compose.yml`
-- `docker/entrypoint.sh`
-
-### Chuẩn bị
-
-1. Cài Docker Desktop.
-2. Sửa `config/custom_batch.json` (docs/url/proxy).
-
-### Build image
-
-```bash
-docker compose build
-```
-
-### Chạy crawl
-
-```bash
-docker compose up
-```
-
-Container sẽ mount sẵn:
-- `./config -> /app/config`
-- `./output -> /app/output`
-- `./logs -> /app/logs`
-- `./state -> /app/state`
-
-Mặc định compose chạy `--headless`.
-
-### Chạy lại và reset resume
-
-```bash
-docker compose run --rm crawler python run_custom_batch.py --config /app/config/custom_batch.json --headless --reset-resume
-```
-
-### Bỏ bước fetch Camoufox mỗi lần start
-
-Mặc định entrypoint chạy `python -m camoufox fetch` để đảm bảo browser có sẵn.
-Sau lần đầu, nếu muốn start nhanh hơn:
-
-```yaml
-environment:
-  SKIP_CAMOUFOX_FETCH: "1"
-```
+Repo tap trung luong chay truc tiep bang Python (`run.bat` / `run_custom_batch.py`).
